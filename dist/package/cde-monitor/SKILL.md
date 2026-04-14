@@ -37,9 +37,7 @@ If this skill is activated by a generic trigger such as `CDE 药物信息查询`
 
 Match the conversation language to the user's language. If the user asks in Chinese, reply in Chinese. If the user asks in English, reply in English. Keep the language choice consistent across the introduction, clarification questions, and final results unless the user explicitly switches languages.
 
-Do not reuse the Chinese opening when the user starts in English. If the trigger phrase or the user's request is in English, the first capability summary and the follow-up question must also be in English.
-
-Recommended opening pattern for Chinese:
+Recommended opening pattern:
 
 ```md
 我可以帮助你查询 CDE 公开药品审评信息，当前支持：
@@ -52,21 +50,6 @@ Recommended opening pattern for Chinese:
 
 请告诉我你要查哪一类信息。
 如果是按企业或药品查询，请尽量提供准确的企业全称或药品名称。
-```
-
-Recommended opening pattern for English:
-
-```md
-I can help you query public CDE drug review information. I currently support:
-
-- Breakthrough therapy announcements
-- Included breakthrough therapy lists, searchable by company or drug
-- Priority review announcements
-- Included priority review lists, searchable by company or drug
-- In-review registration catalog lookups by company or drug for years 2016 through 2026
-
-Tell me which type of CDE information you want to check.
-If you want a company-specific or drug-specific lookup, please provide the exact company name or drug name whenever possible.
 ```
 
 If the user then chooses a company-specific or drug-specific query, confirm the exact company or drug name when the provided string could be ambiguous, abbreviated, or misspelled.
