@@ -6,7 +6,7 @@ CDE (中国药品审评中心) 数据获取工具
 因此采用浏览器自动化方案，通过捕获页面的网络请求来获取数据。
 
 使用方法：
-    from utils.cde_new_drug import CDEDataFetcher
+    from python.cde_monitor import CDEDataFetcher
     
     # 创建获取器
     fetcher = CDEDataFetcher(headless=True)
