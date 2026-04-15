@@ -13,6 +13,7 @@
 - No passwords, API keys, cookies, or tokens are checked in.
 - All included files are text-based.
 - Ignore local caches and virtual environments through `.clawhubignore`.
+- Clean `__pycache__`, `.pytest_cache`, `.pyc`, and `.pyo` artifacts before packaging.
 - Do not include `.clawhubignore` in the runtime zip that will be uploaded to ClawHub.
 - Do not include browser traces, screenshots, downloads, or temporary artifacts.
 
@@ -32,6 +33,20 @@ python -m unittest discover -s tests -p "test_*.py"
 ```
 
 For real release validation, also run at least one live query from each of the six supported query families.
+
+## Build dist artifacts
+
+Use the packaging script from the repository root:
+
+```bash
+python ./scripts/build_dist.py
+```
+
+This script:
+
+- removes local Python cache artifacts from `scripts/` and `tests/`
+- rebuilds `dist/package` and `dist/runtime-package`
+- excludes `__pycache__`, `.pyc`, `.pyo`, and `.pytest_cache` from copied contents and zip files
 
 ## ClawHub notes
 

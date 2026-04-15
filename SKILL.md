@@ -181,6 +181,7 @@ Add `--show-browser` when you need visible browser debugging. JSON is the defaul
 
 - [Setup](./references/setup.md)
 - [Queries](./references/queries.md)
+- [Development guide](./references/development-guide.md)
 - [Publish checklist](./references/publish-checklist.md)
 
 ## Troubleshooting
