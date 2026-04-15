@@ -97,6 +97,18 @@ class CDEClientPaginationTest(unittest.TestCase):
         self.assertEqual(result["records"][0]["normalized"]["acceptance_no"], "MSD-001")
         self.assertEqual(result["records"][-1]["normalized"]["acceptance_no"], "MSD-038")
 
+    def test_in_review_empty_results_are_not_treated_as_timeout(self) -> None:
+        client = _PaginationClient([[]])
+
+        result = client.query_in_review_by_company("同源康医药", [2024])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["metadata"]["total_records"], 0)
+        self.assertEqual(result["metadata"]["pages_visited"], 1)
+        self.assertEqual(result["metadata"]["years_queried"], [2024])
+        self.assertEqual(result["metadata"]["applied_filters"], {"company": "同源康医药"})
+        self.assertEqual(result["records"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

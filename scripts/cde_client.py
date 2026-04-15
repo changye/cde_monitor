@@ -550,9 +550,23 @@ Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4]});
         except json.JSONDecodeError:
             return None
         capture = PageCapture(page=page, request_url=url, payload=payload)
-        if capture.records:
+        if self._is_result_payload(payload):
             return capture
         return None
+
+    def _is_result_payload(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        data = payload.get("data")
+        if isinstance(data, dict):
+            records = data.get("records")
+            if isinstance(records, list):
+                return True
+            for key in ("pages", "totalPage", "pageCount", "total", "size"):
+                if key in data:
+                    return True
+        records = payload.get("records")
+        return isinstance(records, list)
 
     def _detect_total_pages(
         self,
