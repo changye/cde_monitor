@@ -824,7 +824,7 @@ Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4]});
         const labelText = arguments[0];
         const targetValue = arguments[1];
         const scopeSelector = arguments[2];
-                const preferredIds = arguments[3] || [];
+            const preferredIds = arguments[3] || [];
         const scopeRoot = scopeSelector ? document.querySelector(scopeSelector) : document;
         const scope = scopeRoot && scopeRoot.querySelector('.layui-tab-content .layui-show')
           ? scopeRoot.querySelector('.layui-tab-content .layui-show')
@@ -840,12 +840,16 @@ Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4]});
                     }
                     return false;
                 };
+                let preferredMatch = false;
                 for (const preferredId of preferredIds) {
                     const escapedId = window.CSS && CSS.escape ? CSS.escape(preferredId) : preferredId;
                     const direct = scope.querySelector(`#${escapedId}`) || scope.querySelector(`select[name="${preferredId}"]`);
                     if (direct && setSelectValue(direct)) {
-                        return true;
+                        preferredMatch = true;
                     }
+                }
+                if (preferredMatch) {
+                    return true;
                 }
         const candidates = scope.querySelectorAll('label, span, div, td, th');
         const matchLabel = (text) => text && text.replace(/[:：]/g, '').trim().includes(labelText);
