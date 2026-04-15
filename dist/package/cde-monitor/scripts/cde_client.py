@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -9,7 +10,7 @@ from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.support.ui import WebDriverWait
 
-from models import PageCapture, QueryRunResult, QueryTarget
+from models import AcceptanceReviewResult, PageCapture, QueryRunResult, QueryTarget
 from normalizers import dedupe_records, normalize_record
 
 
@@ -71,13 +72,30 @@ IN_REVIEW = QueryTarget(
     scope_selector="#content_9f9c74c73e0f8f56a8bfbc646055026d",
 )
 
+REVIEW_TASKS = QueryTarget(
+    command="review-status-by-acceptance-no",
+    left_tab="审评任务公示",
+    right_tab="新报任务公示",
+    description="Query review task status by acceptance number.",
+    scope_selector="#content_369ac7cfeb67c6000c33f85e6f374044",
+)
+
 
 class CDEQueryError(RuntimeError):
     pass
 
 
 TEXT_FILTER_HINTS = {
-    "受理号": ("acceptid", "acceptidInclude", "acceptidPlan", "acceptidBreakInclude", "acceptidBreakPlan"),
+    "受理号": (
+        "acceptid",
+        "acceptid2",
+        "acceptid3",
+        "acceptid4",
+        "acceptidInclude",
+        "acceptidPlan",
+        "acceptidBreakInclude",
+        "acceptidBreakPlan",
+    ),
     "药品名称": ("drugname", "drugnameInclude", "drugnamePlan", "drugnameBreakInclude", "drugnameBreakPlan"),
     "企业名称": ("company",),
     "注册申请人": (
@@ -93,7 +111,27 @@ SELECT_FILTER_HINTS = {
     "年度": ("year",),
     "药品类型": ("drugtype", "drugtypeNewReport"),
     "申请类型": ("applytype", "applytypecdeNewReport", "applytypecdeNewReportZy", "applytypecdeNewReportSw"),
+    "公示类型": ("splxtype",),
+    "审评任务分类": ("applytypecdeNewReport", "applytypecdeNewReportZy", "applytypecdeNewReportSw"),
 }
+
+REVIEW_STAGE_COLUMNS = (
+    "药理毒理",
+    "临床",
+    "药学",
+    "统计",
+    "临床药理",
+    "合规",
+)
+
+REVIEW_STAGE_ICON_MAP = {
+    "/main/img/lamp_shut.gif": {"code": 1, "label": "本专业已完成审评"},
+    "/main/img/lamp_y.jpg": {"code": 2, "label": "本专业排队待审评"},
+    "/main/img/lamp.gif": {"code": 3, "label": "本专业正在审评"},
+}
+
+MIN_ACCEPTANCE_LOOKUP_YEAR = 2016
+MAX_ACCEPTANCE_LOOKUP_YEAR = 2026
 
 
 class CDEClient:
@@ -158,6 +196,34 @@ class CDEClient:
             years=years,
         ).to_dict()
 
+    def query_review_status_by_acceptance_no(self, acceptance_no: str) -> Dict[str, Any]:
+        normalized_acceptance_no = self._normalize_acceptance_no(acceptance_no)
+        inferred_year = self.infer_acceptance_year(normalized_acceptance_no)
+        self._validate_acceptance_lookup_year(inferred_year, normalized_acceptance_no)
+        basic_record = self._query_acceptance_basic_info(normalized_acceptance_no)
+        if basic_record is None:
+            return AcceptanceReviewResult(
+                acceptance_no=normalized_acceptance_no,
+                inferred_year=inferred_year,
+            ).to_dict()
+
+        review_lookup = self._query_review_status_for_basic_info(normalized_acceptance_no, basic_record)
+        return AcceptanceReviewResult(
+            acceptance_no=normalized_acceptance_no,
+            inferred_year=inferred_year,
+            basic_info=basic_record.get("normalized"),
+            review_status=review_lookup.get("review_status"),
+            attempts=review_lookup.get("attempts", []),
+            pages_visited=review_lookup.get("pages_visited", 0),
+        ).to_dict()
+
+    @staticmethod
+    def infer_acceptance_year(acceptance_no: str) -> int:
+        normalized = re.sub(r"\s+", "", (acceptance_no or "").upper())
+        if not re.fullmatch(r"[A-Z]{4}\d{7,}", normalized):
+            raise CDEQueryError(f"Invalid acceptance number: {acceptance_no}")
+        return 2000 + int(normalized[4:6])
+
     def _query_in_review(
         self,
         *,
@@ -189,6 +255,322 @@ class CDEClient:
             years_queried=queried_years,
             pages_visited=total_pages,
         )
+
+    def _normalize_acceptance_no(self, acceptance_no: str) -> str:
+        normalized = re.sub(r"\s+", "", (acceptance_no or "").upper())
+        if not normalized:
+            raise CDEQueryError("A non-empty acceptance number is required")
+        return normalized
+
+    def _validate_acceptance_lookup_year(self, year: int, acceptance_no: str) -> None:
+        if MIN_ACCEPTANCE_LOOKUP_YEAR <= year <= MAX_ACCEPTANCE_LOOKUP_YEAR:
+            return
+        raise CDEQueryError(
+            "该受理号推断年份超出当前 CDE 页面可查询范围: "
+            f"{acceptance_no} -> {year}，当前支持年份为 {MIN_ACCEPTANCE_LOOKUP_YEAR} 到 {MAX_ACCEPTANCE_LOOKUP_YEAR}"
+        )
+
+    def _query_acceptance_basic_info(self, acceptance_no: str) -> Optional[Dict[str, Any]]:
+        inferred_year = self.infer_acceptance_year(acceptance_no)
+        result = self._query_target(
+            IN_REVIEW,
+            text_filters=(("受理号", acceptance_no),),
+            select_filters=(("年度", str(inferred_year)),),
+            applied_filters={"acceptance_no": acceptance_no, "year": inferred_year},
+            year=inferred_year,
+        )
+        for record in result.records:
+            normalized = record.get("normalized", {})
+            if self._normalize_acceptance_no(normalized.get("acceptance_no", "")) == acceptance_no:
+                return record
+        return None
+
+    def _query_review_status_for_basic_info(
+        self,
+        acceptance_no: str,
+        basic_record: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        plans = self._build_review_search_plans(basic_record)
+        attempts: List[Dict[str, Any]] = []
+        pages_visited = 0
+        driver = self._build_driver()
+        try:
+            self._open_listing_page(driver)
+            self._clear_logs(driver)
+            self._click_left_tab(driver, REVIEW_TASKS.left_tab)
+            self._clear_logs(driver)
+            self._click_right_tab(driver, REVIEW_TASKS.right_tab, scope_selector=REVIEW_TASKS.scope_selector)
+            for plan in plans:
+                filtered_attempt = self._run_review_status_attempt(
+                    driver,
+                    acceptance_no,
+                    plan,
+                    use_acceptance_filter=True,
+                )
+                attempts.append(filtered_attempt["attempt"])
+                pages_visited += filtered_attempt["attempt"].get("pages_scanned", 0)
+                if filtered_attempt.get("review_status") is not None:
+                    return {
+                        "review_status": filtered_attempt["review_status"],
+                        "attempts": attempts,
+                        "pages_visited": pages_visited,
+                    }
+
+                if not filtered_attempt["attempt"].get("warning"):
+                    continue
+
+                broadened_attempt = self._run_review_status_attempt(
+                    driver,
+                    acceptance_no,
+                    plan,
+                    use_acceptance_filter=False,
+                )
+                attempts.append(broadened_attempt["attempt"])
+                pages_visited += broadened_attempt["attempt"].get("pages_scanned", 0)
+                if broadened_attempt.get("review_status") is not None:
+                    return {
+                        "review_status": broadened_attempt["review_status"],
+                        "attempts": attempts,
+                        "pages_visited": pages_visited,
+                    }
+
+            return {"review_status": None, "attempts": attempts, "pages_visited": pages_visited}
+        finally:
+            driver.quit()
+
+    def _build_review_search_plans(self, basic_record: Dict[str, Any]) -> List[Dict[str, Any]]:
+        normalized = basic_record.get("normalized", {})
+        drug_type = normalized.get("drug_type") or ""
+        application_type = normalized.get("application_type") or ""
+        acceptance_no = normalized.get("acceptance_no") or ""
+
+        public_type = self._map_public_notice_type(drug_type, acceptance_no)
+        task_category = self._map_review_task_category(public_type, application_type, acceptance_no)
+        biologics_subtypes = self._map_biologics_subtypes(public_type, drug_type)
+
+        plans: List[Dict[str, Any]] = []
+        for biologics_subtype in biologics_subtypes:
+            plans.append(
+                {
+                    "public_type": public_type,
+                    "task_category": task_category,
+                    "biologics_subtype": biologics_subtype,
+                }
+            )
+        return plans
+
+    def _map_public_notice_type(self, drug_type: str, acceptance_no: str) -> str:
+        if "中药" in drug_type:
+            return "中药审评序列公示"
+        if "生物" in drug_type or "预防用" in drug_type or "治疗用" in drug_type:
+            return "生物制品审评序列公示"
+
+        normalized = self._normalize_acceptance_no(acceptance_no)
+        third_letter = normalized[2]
+        if third_letter == "Z":
+            return "中药审评序列公示"
+        if third_letter == "S":
+            return "生物制品审评序列公示"
+        return "化药审评序列公示"
+
+    def _map_biologics_subtypes(self, public_type: str, drug_type: str) -> List[Optional[str]]:
+        if public_type != "生物制品审评序列公示":
+            return [None]
+        if "治疗用" in drug_type:
+            return ["治疗用生物制品"]
+        if "预防用" in drug_type:
+            return ["预防用生物制品"]
+        return ["治疗用生物制品", "预防用生物制品"]
+
+    def _map_review_task_category(self, public_type: str, application_type: str, acceptance_no: str) -> str:
+        normalized = self._normalize_acceptance_no(acceptance_no)
+        second_letter = normalized[1]
+        fourth_letter = normalized[3]
+
+        if public_type == "生物制品审评序列公示":
+            if "补充" in application_type or second_letter == "B" or fourth_letter == "B":
+                return "补充申请"
+            if "再注册" in application_type or fourth_letter == "Z":
+                return "再注册"
+            if "临床" in application_type or fourth_letter == "L":
+                return "临床试验申请"
+            return "上市申请"
+
+        if "补充" in application_type or second_letter == "B" or fourth_letter == "B":
+            return "补充申请"
+        if "进口再注册" in application_type:
+            return "进口再注册"
+        if "复审" in application_type or fourth_letter == "R":
+            return "复审"
+        if "验证性临床" in application_type:
+            return "验证性临床"
+        if "仿制" in application_type or second_letter == "Y":
+            return "ANDA"
+        if "临床" in application_type or fourth_letter == "L":
+            return "IND"
+        return "NDA"
+
+    def _run_review_status_attempt(
+        self,
+        driver: webdriver.Chrome,
+        acceptance_no: str,
+        plan: Dict[str, Any],
+        *,
+        use_acceptance_filter: bool,
+    ) -> Dict[str, Any]:
+        scope_selector = REVIEW_TASKS.scope_selector
+        self._apply_review_status_filters(
+            driver,
+            acceptance_no,
+            plan,
+            use_acceptance_filter=use_acceptance_filter,
+            scope_selector=scope_selector,
+        )
+        self._submit_review_task_search(driver, scope_selector=scope_selector)
+        time.sleep(1.5)
+
+        page_payload = self._scrape_review_task_page(driver, scope_selector=scope_selector)
+        pages_scanned = 1
+        review_status = self._find_review_task_row(page_payload["rows"], acceptance_no)
+
+        if review_status is None and not page_payload["warning"]:
+            total_pages = page_payload.get("total_pages", 1)
+            for page in range(2, total_pages + 1):
+                if not self._go_to_page(driver, page, scope_selector=scope_selector):
+                    break
+                time.sleep(1.0)
+                page_payload = self._scrape_review_task_page(driver, scope_selector=scope_selector)
+                pages_scanned += 1
+                review_status = self._find_review_task_row(page_payload["rows"], acceptance_no)
+                if review_status is not None:
+                    break
+
+        attempt = {
+            "public_type": plan["public_type"],
+            "task_category": plan["task_category"],
+            "biologics_subtype": plan.get("biologics_subtype"),
+            "used_acceptance_filter": use_acceptance_filter,
+            "warning": page_payload.get("warning"),
+            "pages_scanned": pages_scanned,
+            "found": review_status is not None,
+        }
+        return {"attempt": attempt, "review_status": review_status}
+
+    def _apply_review_status_filters(
+        self,
+        driver: webdriver.Chrome,
+        acceptance_no: str,
+        plan: Dict[str, Any],
+        *,
+        use_acceptance_filter: bool,
+        scope_selector: str,
+    ) -> None:
+        self._select_filter(driver, "公示类型", plan["public_type"], scope_selector=scope_selector)
+        if plan.get("biologics_subtype"):
+            self._select_filter(driver, "药品类型", plan["biologics_subtype"], scope_selector=scope_selector)
+        self._select_filter(driver, "审评任务分类", plan["task_category"], scope_selector=scope_selector)
+        self._fill_text_filter(
+            driver,
+            "受理号",
+            acceptance_no if use_acceptance_filter else "",
+            scope_selector=scope_selector,
+        )
+
+    def _submit_review_task_search(self, driver: webdriver.Chrome, *, scope_selector: str) -> None:
+        script = """
+        const scopeSelector = arguments[0];
+        const scopeRoot = scopeSelector ? document.querySelector(scopeSelector) : document;
+        const scope = scopeRoot && scopeRoot.querySelector('.layui-tab-content .layui-show')
+          ? scopeRoot.querySelector('.layui-tab-content .layui-show')
+          : (scopeRoot || document);
+                const button = Array.from(scope.querySelectorAll('button.searchBtn')).find((candidate) =>
+                    (candidate.getAttribute('onclick') || '').includes("getNewReportList('xb')")
+                );
+        if (!button) {
+          return false;
+        }
+        button.click();
+        return true;
+        """
+        if not driver.execute_script(script, scope_selector):
+            raise CDEQueryError("Could not find the new-review search button on the CDE page")
+
+    def _scrape_review_task_page(self, driver: webdriver.Chrome, *, scope_selector: str) -> Dict[str, Any]:
+        script = """
+        const scopeRoot = document.querySelector(arguments[0]);
+        const scope = scopeRoot && scopeRoot.querySelector('.layui-tab-content .layui-show')
+          ? scopeRoot.querySelector('.layui-tab-content .layui-show')
+          : (scopeRoot || document);
+        const warnNode = scope.querySelector('#hightLightWarn_xb');
+        const countNode = scope.querySelector('#newReportPage .layui-laypage-count');
+        const currentNode = scope.querySelector('#newReportPage .layui-laypage-curr em:last-child');
+        const limitNode = scope.querySelector('#newReportPage .layui-laypage-limits option:checked');
+        const countMatch = countNode && countNode.textContent ? countNode.textContent.match(/共\s*(\d+)\s*条/) : null;
+        const totalRecords = countMatch ? parseInt(countMatch[1], 10) : 0;
+        const pageSize = limitNode ? parseInt(limitNode.value || limitNode.textContent, 10) : 10;
+        const totalPages = totalRecords && pageSize ? Math.max(1, Math.ceil(totalRecords / pageSize)) : 1;
+        const currentPage = currentNode ? parseInt(currentNode.textContent, 10) : 1;
+        const rows = Array.from(scope.querySelectorAll('#newReportTbody tr')).map((row) => {
+          const cells = Array.from(row.querySelectorAll('td'));
+          const stageCells = cells.slice(5, 11).map((cell) => {
+            const img = cell.querySelector('img');
+            return img ? img.getAttribute('src') || '' : '';
+          });
+          const acceptanceCell = cells[1] || null;
+          return {
+            sequence: (cells[0]?.innerText || '').trim(),
+            acceptance_no: (acceptanceCell?.innerText || '').trim(),
+            drug_name: (cells[2]?.innerText || '').trim(),
+            entered_center_at: (cells[3]?.innerText || '').trim(),
+            review_state: (cells[4]?.innerText || '').trim(),
+            remark: (cells[11]?.innerText || '').trim(),
+            stage_icons: stageCells,
+            is_highlighted: Boolean(acceptanceCell && acceptanceCell.querySelector('font')),
+          };
+        }).filter((row) => row.acceptance_no);
+        return {
+          warning: warnNode ? (warnNode.innerText || '').trim() : '',
+          current_page: currentPage,
+          total_pages: totalPages,
+          total_records: totalRecords,
+          rows,
+        };
+        """
+        page_payload = driver.execute_script(script, scope_selector)
+        rows = [self._normalize_review_task_row(row) for row in page_payload.get("rows", [])]
+        return {
+            "warning": page_payload.get("warning") or "",
+            "current_page": page_payload.get("current_page", 1),
+            "total_pages": page_payload.get("total_pages", 1),
+            "total_records": page_payload.get("total_records", 0),
+            "rows": rows,
+        }
+
+    def _normalize_review_task_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        stages: Dict[str, Dict[str, Any]] = {}
+        for column, icon in zip(REVIEW_STAGE_COLUMNS, row.get("stage_icons", [])):
+            stage_info = REVIEW_STAGE_ICON_MAP.get(icon, {"code": 0, "label": "本专业未启动"})
+            stages[column] = {
+                "code": stage_info["code"],
+                "label": stage_info["label"],
+                "icon": icon,
+            }
+        return {
+            "sequence": row.get("sequence"),
+            "acceptance_no": row.get("acceptance_no"),
+            "drug_name": row.get("drug_name"),
+            "entered_center_at": row.get("entered_center_at"),
+            "review_state": row.get("review_state"),
+            "remark": row.get("remark"),
+            "is_highlighted": bool(row.get("is_highlighted")),
+            "stages": stages,
+        }
+
+    def _find_review_task_row(self, rows: Sequence[Dict[str, Any]], acceptance_no: str) -> Optional[Dict[str, Any]]:
+        for row in rows:
+            if self._normalize_acceptance_no(row.get("acceptance_no", "")) == acceptance_no:
+                return row
+        return None
 
     def _query_target(
         self,
@@ -305,7 +687,19 @@ Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4]});
         time.sleep(1.5)
 
     def _click_left_tab(self, driver: webdriver.Chrome, text: str) -> None:
-        if not self._click_element_by_exact_text(driver, text, exclude_left=False):
+        script = """
+        const targetText = arguments[0];
+        const normalize = (value) => (value || '').replace(/\s+/g, '').replace(/[：:]/g, '').trim();
+        const target = normalize(targetText);
+        const items = Array.from(document.querySelectorAll('.etcd_nav_ul li'));
+        for (const item of items) {
+            if (normalize(item.textContent || '') !== target) continue;
+            item.click();
+            return true;
+        }
+        return false;
+        """
+        if not driver.execute_script(script, text) and not self._click_element_by_exact_text(driver, text, exclude_left=False):
             raise CDEQueryError(f"Could not find left navigation tab: {text}")
         time.sleep(1.5)
 
@@ -330,9 +724,15 @@ Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4]});
         const elements = (scope || document).querySelectorAll('a, span, button, li, div');
         const leftSelectors = '.left-nav, .sidebar, .menu-list, .el-menu, [class*="left"]';
         const normalize = (value) => (value || '').replace(/\s+/g, '').replace(/[：:]/g, '').trim();
+        const isVisible = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+        };
         const normalizedTarget = normalize(targetText);
         let containsMatch = null;
         for (const element of elements) {
+            if (!isVisible(element)) continue;
             const content = normalize(element.textContent || '');
             if (!content) continue;
             if (excludeLeft && element.closest(leftSelectors)) continue;
@@ -550,9 +950,23 @@ Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4]});
         except json.JSONDecodeError:
             return None
         capture = PageCapture(page=page, request_url=url, payload=payload)
-        if capture.records:
+        if self._is_result_payload(payload):
             return capture
         return None
+
+    def _is_result_payload(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        data = payload.get("data")
+        if isinstance(data, dict):
+            records = data.get("records")
+            if isinstance(records, list):
+                return True
+            for key in ("pages", "totalPage", "pageCount", "total", "size"):
+                if key in data:
+                    return True
+        records = payload.get("records")
+        return isinstance(records, list)
 
     def _detect_total_pages(
         self,

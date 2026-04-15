@@ -49,9 +49,25 @@ DATE_FIELDS = (
     "publicDate",
     "pubDate",
     "acceptDate",
+    "createdate",
     "createTime",
     "date",
     "sqrq",
+)
+
+DRUG_TYPE_FIELDS = (
+    "drugtype",
+    "drugType",
+)
+
+APPLICATION_TYPE_FIELDS = (
+    "applytype",
+    "applyType",
+)
+
+REGISTRATION_CATEGORY_FIELDS = (
+    "registerkind",
+    "registerKind",
 )
 
 ID_FIELDS = (
@@ -102,6 +118,9 @@ def normalize_record(
         "drug_name": _first_value(raw_record, DRUG_FIELDS),
         "company_name": _first_value(raw_record, COMPANY_FIELDS),
         "acceptance_no": _first_value(raw_record, ACCEPTANCE_FIELDS),
+        "drug_type": _first_value(raw_record, DRUG_TYPE_FIELDS),
+        "application_type": _first_value(raw_record, APPLICATION_TYPE_FIELDS),
+        "registration_category": _first_value(raw_record, REGISTRATION_CATEGORY_FIELDS),
         "publication_title": _first_value(raw_record, TITLE_FIELDS),
         "publication_date": date_value,
         "stage": source_tab,

@@ -67,6 +67,47 @@ class _PaginationClient(CDEClient):
         return 1 <= page <= len(self._page_records)
 
 
+class _ReviewLookupClient(CDEClient):
+    def __init__(self, basic_record: Dict[str, Any] | None, attempt_results: List[Dict[str, Any]]) -> None:
+        super().__init__(headless=True, timeout=1)
+        self._basic_record = basic_record
+        self._attempt_results = list(attempt_results)
+        self.calls: List[Dict[str, Any]] = []
+
+    def _build_driver(self) -> _FakeDriver:
+        return _FakeDriver()
+
+    def _open_listing_page(self, driver: _FakeDriver) -> None:
+        return
+
+    def _clear_logs(self, driver: _FakeDriver) -> None:
+        return
+
+    def _click_left_tab(self, driver: _FakeDriver, text: str) -> None:
+        return
+
+    def _click_right_tab(self, driver: _FakeDriver, text: str, *, scope_selector=None) -> None:
+        return
+
+    def _query_acceptance_basic_info(self, acceptance_no: str) -> Dict[str, Any] | None:
+        return self._basic_record
+
+    def _run_review_status_attempt(
+        self,
+        driver: _FakeDriver,
+        acceptance_no: str,
+        plan: Dict[str, Any],
+        *,
+        use_acceptance_filter: bool,
+    ) -> Dict[str, Any]:
+        self.calls.append({
+            "acceptance_no": acceptance_no,
+            "plan": plan,
+            "use_acceptance_filter": use_acceptance_filter,
+        })
+        return self._attempt_results.pop(0)
+
+
 class CDEClientPaginationTest(unittest.TestCase):
     def test_in_review_company_query_aggregates_four_pages(self) -> None:
         page_records = []
@@ -108,6 +149,86 @@ class CDEClientPaginationTest(unittest.TestCase):
         self.assertEqual(result["metadata"]["years_queried"], [2024])
         self.assertEqual(result["metadata"]["applied_filters"], {"company": "同源康医药"})
         self.assertEqual(result["records"], [])
+
+
+class CDEClientReviewLookupTest(unittest.TestCase):
+    def test_infer_acceptance_year_uses_digits_after_prefix(self) -> None:
+        self.assertEqual(CDEClient.infer_acceptance_year("CYSB2600096"), 2026)
+        self.assertEqual(CDEClient.infer_acceptance_year("CXHL0500001"), 2005)
+
+    def test_review_lookup_rejects_year_outside_supported_page_range(self) -> None:
+        client = _ReviewLookupClient(None, [])
+
+        with self.assertRaisesRegex(Exception, "该受理号推断年份超出当前 CDE 页面可查询范围"):
+            client.query_review_status_by_acceptance_no("CYHS2804599")
+
+    def test_review_lookup_returns_basic_info_missing_when_first_step_fails(self) -> None:
+        client = _ReviewLookupClient(None, [])
+
+        result = client.query_review_status_by_acceptance_no("CYSB2600096")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["basic_info_found"])
+        self.assertFalse(result["review_status_found"])
+        self.assertEqual(result["attempts"], [])
+
+    def test_review_lookup_retries_without_acceptance_filter_after_warning(self) -> None:
+        basic_record = {
+            "normalized": {
+                "acceptance_no": "CYSB2600096",
+                "drug_name": "依沃西单抗注射液",
+                "company_name": "康方赛诺医药有限公司",
+                "drug_type": "治疗用生物制品",
+                "application_type": "补充申请",
+            },
+            "raw": {},
+        }
+        client = _ReviewLookupClient(
+            basic_record,
+            [
+                {
+                    "attempt": {
+                        "public_type": "生物制品审评序列公示",
+                        "task_category": "补充申请",
+                        "biologics_subtype": "治疗用生物制品",
+                        "used_acceptance_filter": True,
+                        "warning": "没有查到受理号为【CYSB2600096】的数据！",
+                        "pages_scanned": 1,
+                        "found": False,
+                    },
+                    "review_status": None,
+                },
+                {
+                    "attempt": {
+                        "public_type": "生物制品审评序列公示",
+                        "task_category": "补充申请",
+                        "biologics_subtype": "治疗用生物制品",
+                        "used_acceptance_filter": False,
+                        "warning": "",
+                        "pages_scanned": 33,
+                        "found": True,
+                    },
+                    "review_status": {
+                        "acceptance_no": "CYSB2600096",
+                        "review_state": "排队待审评",
+                        "entered_center_at": "2026-03-13",
+                        "stages": {
+                            "药理毒理": {"code": 2, "label": "本专业排队待审评", "icon": "/main/img/lamp_y.jpg"},
+                        },
+                    },
+                },
+            ],
+        )
+
+        result = client.query_review_status_by_acceptance_no("CYSB2600096")
+
+        self.assertTrue(result["basic_info_found"])
+        self.assertTrue(result["review_status_found"])
+        self.assertEqual(result["review_status"]["acceptance_no"], "CYSB2600096")
+        self.assertEqual(result["metadata"]["pages_visited"], 34)
+        self.assertEqual(len(client.calls), 2)
+        self.assertTrue(client.calls[0]["use_acceptance_filter"])
+        self.assertFalse(client.calls[1]["use_acceptance_filter"])
 
 
 if __name__ == "__main__":

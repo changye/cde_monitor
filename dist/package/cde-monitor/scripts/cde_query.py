@@ -69,10 +69,33 @@ def build_parser() -> argparse.ArgumentParser:
     in_review_drug.add_argument("--drug", required=True)
     in_review_drug.add_argument("--years", nargs="+", type=_parse_in_review_year, default=DEFAULT_IN_REVIEW_YEARS)
 
+    review_status = subparsers.add_parser("review-status-by-acceptance-no", parents=[common], add_help=False)
+    review_status.add_argument("--acceptance-no", required=True)
+
     return parser
 
 
 def _pretty_print(payload: Dict[str, Any]) -> None:
+    if payload.get("command") == "review-status-by-acceptance-no":
+        print(f"command: {payload.get('command')}")
+        print(f"acceptance_no: {payload.get('acceptance_no')}")
+        print(f"inferred_year: {payload.get('inferred_year')}")
+        print(f"basic_info_found: {payload.get('basic_info_found')}")
+        print(f"review_status_found: {payload.get('review_status_found')}")
+        basic_info = payload.get("basic_info") or {}
+        if basic_info:
+            print(
+                f"basic_info: 药品={basic_info.get('drug_name') or 'N/A'} | 药品类型={basic_info.get('drug_type') or 'N/A'} | 申请类型={basic_info.get('application_type') or 'N/A'}"
+            )
+        review_status = payload.get("review_status") or {}
+        if review_status:
+            print(
+                f"review_status: 状态={review_status.get('review_state') or 'N/A'} | 进入中心时间={review_status.get('entered_center_at') or 'N/A'}"
+            )
+            for stage, details in (review_status.get("stages") or {}).items():
+                print(f"  - {stage}: {details.get('label')}")
+        return
+
     metadata = payload.get("metadata", {})
     print(f"command: {payload.get('command')}")
     print(f"total_records: {metadata.get('total_records', 0)}")
@@ -111,6 +134,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             payload = client.query_in_review_by_company(args.company, args.years)
         elif args.command == "in-review-by-drug":
             payload = client.query_in_review_by_drug(args.drug, args.years)
+        elif args.command == "review-status-by-acceptance-no":
+            payload = client.query_review_status_by_acceptance_no(args.acceptance_no)
         else:
             parser.error(f"Unsupported command: {args.command}")
             return 2

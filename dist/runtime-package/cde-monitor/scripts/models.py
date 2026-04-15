@@ -59,3 +59,34 @@ class QueryRunResult:
                 "total_records": len(self.records),
             },
         }
+
+
+@dataclass
+class AcceptanceReviewResult:
+    acceptance_no: str
+    inferred_year: int
+    basic_info: Optional[Dict[str, Any]] = None
+    review_status: Optional[Dict[str, Any]] = None
+    attempts: List[Dict[str, Any]] = field(default_factory=list)
+    pages_visited: int = 0
+    generated_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "command": "review-status-by-acceptance-no",
+            "acceptance_no": self.acceptance_no,
+            "inferred_year": self.inferred_year,
+            "basic_info_found": self.basic_info is not None,
+            "review_status_found": self.review_status is not None,
+            "basic_info": self.basic_info,
+            "review_status": self.review_status,
+            "attempts": self.attempts,
+            "metadata": {
+                "generated_at": self.generated_at,
+                "pages_visited": self.pages_visited,
+                "total_attempts": len(self.attempts),
+            },
+        }

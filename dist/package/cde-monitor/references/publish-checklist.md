@@ -13,6 +13,7 @@
 - No passwords, API keys, cookies, or tokens are checked in.
 - All included files are text-based.
 - Ignore local caches and virtual environments through `.clawhubignore`.
+- Do not include `.clawhubignore` in the runtime zip that will be uploaded to ClawHub.
 - Do not include browser traces, screenshots, downloads, or temporary artifacts.
 
 ## Runtime clarity

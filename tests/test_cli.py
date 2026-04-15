@@ -85,6 +85,16 @@ class CliParserTest(unittest.TestCase):
                 "2027",
             ])
 
+    def test_review_status_command_requires_acceptance_number(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([
+            "review-status-by-acceptance-no",
+            "--acceptance-no",
+            "CYSB2600096",
+        ])
+        self.assertEqual(args.command, "review-status-by-acceptance-no")
+        self.assertEqual(args.acceptance_no, "CYSB2600096")
+
 
 if __name__ == "__main__":
     unittest.main()
